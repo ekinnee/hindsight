@@ -1073,6 +1073,18 @@ class MemoriesExtension(Extension, ABC):
         attribute."""
         return self.store_owned
 
+    def backend_name_for(self, bank_id: str) -> str:
+        """Which store serves this bank, as the ``memories_backend`` metric label. Empty by default.
+
+        Empty means no label at all, so a deployment that never overrides this keeps exactly the
+        series it has today: adding a label to an existing series starts a new one and orphans its
+        history. A router whose banks live in different backends overrides this to name the store
+        it routes a bank to -- typically only the non-default one, leaving the default store's
+        series unlabelled and continuous. Per-backend latency otherwise needs the per-tenant label,
+        which is too high-cardinality to leave on. Must be a short, bounded name.
+        """
+        return ""
+
     async def put_documents(self, *, bank_id: str, documents: list[dict], expect_watermark: int | None = None) -> None:
         """Store (or replace) several documents in one call.
 
@@ -3620,6 +3632,16 @@ class MemoriesExtension(Extension, ABC):
             conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[str(mid) for mid in unit_ids]
         )
         return {str(m.unit_id) for m in present}
+
+    async def lock_observation_tags(self, *, conn, fq_table, bank_id: str, observation_id: str) -> list[str] | None:
+        """The observation's current tags, held so a concurrent tag edit cannot land before the
+        caller's transaction commits. None when the observation is gone.
+
+        Postgres locks the row. A store that keeps memories outside SQL has its own concurrency
+        model, so this default is an unlocked read.
+        """
+        current = await self.get_memories(conn=conn, fq_table=fq_table, bank_id=bank_id, unit_ids=[observation_id])
+        return list(current[0].tags or []) if current else None
 
     async def memories_changed_since(self, *, conn, fq_table, bank_id: str, read_at: dict[str, datetime]) -> list[str]:
         """Ids in ``read_at`` (id -> the ``updated_at`` it was read with) edited since (#4831).
